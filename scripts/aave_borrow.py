@@ -6,6 +6,8 @@ from web3 import Web3
 
 
 AMOUNT = Web3.toWei(0.05, "ether")
+STABLE_INTEREST_MODE = 1
+REFERRAL_CODE = 0  # deprecated it is needed for 0 to be passed
 
 
 def get_lending_pool():
@@ -49,14 +51,27 @@ def get_asset_price(price_feed_address):
     dai_eth_price_feed = interface.IAggregatorV3(price_feed_address)
     latest_price = dai_eth_price_feed.latestRoundData()[
         1]  # prince is at index 1
-    print(f"DAI/ETH price is {latest_price}")
-    return float(latest_price)
+    converted_latest_prince = Web3.fromWei(latest_price, 'ether')
+    print(f"DAI/ETH price is {converted_latest_prince}")
+    return float(converted_latest_prince)
+
+
+def repay_all(amount, lending_pool, account):
+    erc20_address = config['networks'][network.show_active()]['dai_token']
+    approve_erc20(Web3.toWei(amount, "ether"),
+                  lending_pool.address, erc20_address, account)
+    # function repay(address asset, uint256 amount, uint256 rateMode, address onBehalfOf)
+
+    repay_tx = lending_pool.repay(
+        erc20_address, amount, STABLE_INTEREST_MODE, account.address, {"from": account})
+    repay_tx.wait(1)
+    print("Repaid")
 
 
 def main():
     account = get_account()
     erc20_address = config['networks'][network.show_active()]['weth_token']
-    if network.show_active() in ["mainnet-fork"]:
+    if network.show_active() in ["mainnet-fork", "kovan"]:
         get_weth()
     lending_pool = get_lending_pool()
     print(f"lending pool: {lending_pool}")
@@ -65,7 +80,7 @@ def main():
     # function deposit(address asset, uint256 amount, address onBehalfOf, uint16 referralCode)
     print('Depositing...')
     tx = lending_pool.deposit(erc20_address, AMOUNT,
-                              account.address, 0, {"from": account})
+                              account.address, REFERRAL_CODE, {"from": account})
     tx.wait(1)
     print("Deposited")
     borrowable_eth, total_dep = get_borrowable_data(lending_pool, account)
@@ -73,3 +88,23 @@ def main():
     dai_eth_price_feed = config['networks'][network.show_active(
     )]['dai_eth_price_feed']
     dai_eth_price = get_asset_price(dai_eth_price_feed)
+    # we multiply by 0.95 as a buffer, for better health factor
+    # borrowable-ETH -> borrowable_dai * 95%
+    amount_dai_to_borrow = (1 / dai_eth_price) * (borrowable_eth * 0.95)
+    print(f"we are going to borrow {amount_dai_to_borrow} DAI")
+
+    # Now we will borrow
+    # function borrow(address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf)
+    dai_address = config['networks'][network.show_active()]["dai_token"]
+    borrow_tx = lending_pool.borrow(
+        dai_address,
+        Web3.toWei(amount_dai_to_borrow, "ether"),
+        STABLE_INTEREST_MODE,
+        REFERRAL_CODE,
+        account.address, {"from": account}
+    )
+    borrow_tx.wait(1)
+    print("we borrowed some DAI!")
+    get_borrowable_data(lending_pool, account)
+    #repay_all(AMOUNT, lending_pool, account)
+    print("you just deposited,borrowed,and repayed with AAVE, Brownie,and Chainlink")
